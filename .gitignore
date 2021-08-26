@@ -3,4 +3,6 @@
 .RData
 .RProj
 .Ruserdata
+.cmd
 add_files/
+*.cmd

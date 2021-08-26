@@ -1,0 +1,163 @@
+---
+title: "Downscaling Workflow"
+author: "Maite"
+date: "15 8 2021"
+output: github_document
+---
+
+```{r setup, eval=F, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# This document 
+This document summarizes the different steps required for the downscaling approach described in XXX and links to the scripts within this repository in the adequate order. The resulting downscaling model and necessary predictor data to downscale a MODIS scene captured during the austral summer months during daylight conditions and the McMurdo Dry Valleys can be installed from [Github repo downscaleLST.MDV](https://github.com/MLezamaValdes/downscaleLST.MDV)  
+
+
+## Basic settings 
+- load libraries
+- define time range 
+- create directories for Landsat and MODIS data to be downloaded
+- read Area of Interest (AOI) shape
+- define and source some functions
+
+
+```{r, include=FALSE, eval=F}
+# newarea can be 0 (no) or 1 (yes). If area is not new, it is assumed that the land outline shapefile and cropped rock outcrop is already available and doesn't need to be unzipped etc.
+newarea <- 0
+areaname <- "MDV"
+
+# L8: either "Bt" or "L1"
+L8downloadtype <- "Bt"
+
+
+## time range parameters 
+year <- c(2020:2013)
+month <- c("01","02","03","04", "09", "10","11", "12")
+
+# maximum time between satellite scenes 
+timethres <- 0.6
+
+scriptpath <- "C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/downscale_controlscripts/data_prep/"
+scriptpath_organized <- "C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/downscale_controlscripts/data_prep/downscaling_organized/"
+
+maindir <- "D:/downscaling_after_talk/" # this must point to an existing directory, rest is generated in setup
+main <- paste0(maindir, "data_download_preprocessing/")
+L8datpath <- paste0(main, "L8/")
+modispath <- paste0(main, "MODIS/")
+tdpath <-paste0(main, "timediff/")
+cddir <- paste0(maindir, "clean_data/")
+figurepath <- "C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/paper/paper_draft/figures/"
+
+
+##### set path to DEM, AOI, land outline
+
+dempath <- "E:/new_downscaling/tiles_westcoast/" # this must point to an existing directory with dem inside
+aoipath <-  "E:/new_downscaling/aoi/" # this must point to an existing directory with "Levy_MDV_actually.shp"
+aoip <- list.files(aoipath, pattern="actually.shp", full.names = T)
+clpath <- "E:/new_downscaling/coastline/Coastline_high_res_polygon/"
+
+`%notin%` <- Negate(`%in%`)
+
+## PATH TO TOOLS CMD
+
+##### set paths for translating to SAGA
+path_saga_norm <- "C:/OSGeo4W64/apps/saga-ltr/"
+sagaCmd <- paste0(path_saga_norm, "saga_cmd.exe")
+saga_outpath <- paste0(main, "SAGA_run/")
+
+##### set paths for batch processing in HEG tool
+# make an batchindir directory with the hdf files to batch convert and an batchoutdir directory with 
+# the prm template file, where output files will be written to
+# batchrunpath needs to be where MyHEG_batchScript.bat is located
+batchrunpath <- "C:/Users/mleza/HEG/HEG_Win/bin/BatchRunning/BatchRunning/"
+batchindir <- paste0(batchrunpath, "indir/") 
+batchoutdir <- paste0(batchrunpath, "outdir/")
+# for stacking images per month
+
+
+source(paste0(scriptpath_organized, "0a_setup.R"))
+#file.edit(paste0(scriptpath_organized, "0a_setup.R"))
+
+# this is one raster with a complete coverage of the research area to use as a template 
+template <- raster("E:/new_downscaling/clean_data/template_new.tif")
+
+```
+
+## 1 Preparing the Digital Elevation Model (DEM)
+```{r, eval=F}
+file.edit("1_DEM.R")
+```
+
+## 2 Selecting, downloading and processing Landsat Band 10 to Land Surface Temperature (LST)
+Scenes that show little cloud contamination, are overlapping the AOI sufficiently and are temporally closely matching an available MODIS scene are being selected and queried.
+```{r, eval=F}
+file.edit(paste0(scriptpath_organized, "2_1_selectLandsat.R"))
+file.edit(paste0(scriptpath_organized, "2_2a_downloadLandsat.R"))
+file.edit(paste0(scriptpath_organized, "2_2b_downloadLandsat.R"))
+file.edit(paste0(scriptpath_organized, "2_2c_place_scenes.R"))
+file.edit(paste0(scriptpath_organized, "2_3_processLandsat.R"))
+```
+
+## 3 MODIS 
+MOD11_L2 and MYD11_L2 data come already cloud masked by MODIS product MOD35_L2. 
+```{r, eval=F}
+file.edit("3_MODIS.R")
+```
+
+
+## 4 Creating a Landsat and MODIS data stack per month 
+```{r, eval=F}
+file.edit("4_make_sat_stack.R")
+```
+
+## 5 Create incidence angle and hillshading raster
+For each unique MODIS scene capturing time, topographic solar shading and the solar incidence angle are calculated based on the DEM and the corresponding solar position. 
+```{r, eval=F}
+file.edit("Palma/5_ia_hs_Palma.R")
+```
+
+
+## 6 Match satellite LST data and solar insolation variables
+```{r, eval=F}
+file.edit("6_match_MOD_L_ia_hs.R")
+```
+
+## 7 extract data from raster stacks to table format
+```{r, eval=F}
+file.edit("Palma/7_stack_extraction_Palma.R")
+```
+
+## 8 Gather training dataset using most dissimilar samples
+Gather a training dataset by choosing the most dissimilar samples from 3Mio random samples taken from the training areas and months (10 of 15 months for which data was available during the sampling period from 2013 to 2019). This approach was pursued in order to provide the model with the best coverage of environmental conditions within the feature space of predictor and response variable. 
+Afterwards, the amount of samples is reduced to a manageable sample size of 150000 data points via a Latin-Hypercube sampling for the training data and a random sampling from the validation areas and time steps. 
+```{r,eval=F}
+file.edit("Palma/8_DI_log_choosing_Palma_3m.R")
+file.edit("Palma/8a_gather_train_LHS_valid_rand.R")
+```
+
+
+## 9 Forward Feature Selection for Random Forest, Gradient Boosting Machine and Neural Net
+
+```{r,eval=F}
+file.edit("Palma/9_FFS_remodelling_rf.R")
+file.edit("Palma/9_FFS_models_gbm_SE_F.R")
+file.edit("Palma/9_FFS_models_nnet_SE_F.R")
+```
+
+## 10 Evaluate FFS 
+```{r,eval=F}
+file.edit("10_evaluate_FFS_remodelling.R")
+```
+
+## 11 Tune final models
+```{r,eval=F}
+file.edit("Palma/11_tune_final_models.R")
+file.edit("Palma/11_tune_final_models_remod_fast_few_mtry.R")
+file.edit("Palma/11_looking_at_final_models.R")
+```
+
+## 12 External testing
+```{r,eval=F}
+file.edit("12_external_testing_remodelling.R")
+```
+

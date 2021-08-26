@@ -85,14 +85,9 @@ foldids <- CreateSpacetimeFolds(train, spacevar="spatialblocks", timevar = "ymo"
 set.seed(100)
 
 metric <- "RMSE" # Selection of variables made by either Rsquared or RMSE
-# methods <- c(#"rf",
-#              "nnet",
-#              #"svmLinear",
-#              "gbm")
-# methods <- c("rf",
-#              "nnet")
-# methods <- c("gbm")
-methods <- c("svmLinear")
+methods <- c("rf",
+             "nnet",
+             "gbm")
 withinSE <- FALSE # favour models with less variables or not?
 response <- train$Landsat
 n <- 150000
