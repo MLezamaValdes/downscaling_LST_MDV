@@ -882,6 +882,9 @@ comp_stacks <- lapply(seq(csvfiles_stacks), function(j){
 
 allscenesinstacks <- do.call("rbind", comp_stacks)
 nrow(allscenesinstacks)
+
+aqua <- allscenesinstacks[allscenesinstacks$MODMYD==2,]
+summary(aqua$timediff)*60
 ```
 
 

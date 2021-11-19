@@ -88,6 +88,7 @@ for (i in 1:length(opts)){
   
   testlist <- list(test1, test2, test3)
   
+  load(paste0(modelpath, "final_model_rf_150000factorfast_mtry.RData"))
   
   testlist <- testlist 
   sizetests <- c(nrow(testlist[[1]]), nrow(testlist[[2]]), nrow(testlist[[3]]))
@@ -128,7 +129,6 @@ for (i in 1:length(opts)){
   # fm <- fm[grepl(opts[i], fm)]
   # print(fm)
   
-  load(paste0(modelpath, "final_model_rf_150000factorfast_mtry.RData"))
   
   print(model_final)
   
@@ -195,7 +195,7 @@ for (i in 1:length(opts)){
       labs(x=paste("observed LST"), 
              y=paste("predicted LST"),
              title= paste0("(", letters[j], ")  ", paste0(testtitle[j], " n=", sizetests[j])),
-             subtitle=paste0("R²=",sround$Rsq, " RMSE=",sround$RMSE))+
+             subtitle=paste0("R²=",sround$Rsq, " RMSE=",sround$RMSE, " ME=", sround$ME, " MAE=", sround$MAE))+
       stat_binhex(bins=300)+
       geom_abline(slope=1,intercept=0)+
       scale_x_continuous(expand=c(0,0))+
@@ -220,7 +220,7 @@ for (i in 1:length(opts)){
   eg <- grid.arrange(plots[[1]], plots[[2]], plots[[3]], nrow = 2)
   eg
   
-  ggsave(paste0(figurepath, "external_eval_new_", method, "_",opts[i], "_remodeling.png"), 
+  ggsave(paste0(figurepath, "external_eval_new_", method, "_",opts[i], "_remodeling_with_ME.png"), 
          plot = eg, width=20, height=14, units="cm", dpi=1000)
   
   
@@ -234,26 +234,38 @@ for (i in 1:length(opts)){
 
 ##################### VARIMP #################################################
 
-vi <- varImp(model_final)
-
-str(vi)
-class(vi$importance)
-
 library(tidyverse)
 library(dplyr)
 library(ggplot2)
 
+vi <- varImp(model_final)
 vi <- vi$importance
 vi$var <- rownames(vi)
 names(vi) <- c("Importance", "Predictor")
 vi <- vi[order(vi$Importance),]
-
-
-
 vi$Predictor <- as.factor(vi$Predictor)
 vi$Predictornames <- c("Terra/Aqua", "aspect","slope", "incidence angle",
                        "soil type", "landcover type", "DEM", "MODIS LST")
 vi
+
+
+vi_100 <- varImp(model_final, scale=FALSE)
+vi_100 <- vi_100$importance
+vi_100$var <- rownames(vi_100)
+names(vi_100) <- c("Importance", "Predictor")
+vi_100 <- vi_100[order(vi_100$Importance),]
+vi_100$Predictor <- as.factor(vi_100$Predictor)
+vi_100$Predictornames <- c("Terra/Aqua", "aspect","slope", "incidence angle",
+                       "soil type", "landcover type", "DEM", "MODIS LST")
+
+range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+
+vi_100$Importance01 <- range01(vi_100$Importance)
+vi_100
+
+vi_100$percImportance <- vi_100$Importance/sum(vi_100$Importance)
+
+
 
 viplot <- vi %>% 
   ggplot(aes(reorder(Predictornames, Importance), Importance)) + 
@@ -270,8 +282,55 @@ viplot <- vi %>%
         legend.text = element_text(size=12))
 
 viplot
+
+
+vi100plot <- vi_100 %>% 
+  ggplot(aes(reorder(Predictornames, Importance01), Importance01)) + 
+  geom_col() + 
+  # scale_fill_gradient2(low = "white", 
+  #                      high = "skyblue") + 
+  coord_flip() + theme_minimal()+
+  labs(y = "",
+       x = "")+
+  theme(legend.title = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=15),
+        legend.text = element_text(size=12))
+
+vi100plot
+
+viabsplot <- vi_100 %>% 
+  ggplot(aes(reorder(Predictornames, Importance), Importance)) + 
+  geom_col() + 
+  # scale_fill_gradient2(low = "white", 
+  #                      high = "skyblue") + 
+  coord_flip() + theme_minimal()+
+  labs(y = "",
+       x = "")+
+  theme(legend.title = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=15),
+        legend.text = element_text(size=12))
+
+viabsplot
+
+
 ggsave(paste0(figurepath, "VI_plot.png"), 
        plot = viplot, 
        # width=10, height=7, 
        # units="cm", 
+       dpi=1000)
+
+ggsave(paste0(figurepath, "VI_plot_percent.png"), 
+       plot = vi100plot, 
+       # width=10, height=7, 
+       # units="cm", 
+       bg="white",
+       dpi=1000)
+
+ggsave(paste0(figurepath, "VI_plot_abs.png"), 
+       plot = viabsplot, 
+       # width=10, height=7, 
+       # units="cm", 
+       bg="white",
        dpi=1000)

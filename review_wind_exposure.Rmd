@@ -1,0 +1,668 @@
+---
+title: "Review Wind Exposure"
+author: "Maite"
+date: "3 11 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Review: Wind exposure and LST 
+```{r, message=F, warning=F,echo=F}
+library(raster)
+library(mapview)
+library(rasterVis)
+library(ncdf4) # package for netcdf manipulation
+library(rgdal)
+library(corrplot)
+
+
+aoipath <-  "E:/new_downscaling/aoi/" # this must point to an existing directory with "Levy_MDV_actually.shp"
+aoip <- list.files(aoipath, pattern="actually.shp", full.names = T)
+aoi <- readOGR(aoip)
+antaproj <- crs("+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m
++no_defs +ellps=WGS84 +towgs84=0,0,0")
+aoianta <- spTransform(aoi, antaproj)
+aoiwgs <- spTransform(aoianta, crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs "))
+
+
+```
+
+
+http://www.brianbuma.com/news/2017/12/29/quantifying-wind-exposure-in-r
+
+First, the following code quickly calculates - based on user supplied wind direction, deflection angles, and search distances (how far upwind a barrier should matter) - relative exposure:
+
+```{r, eval=F, include=F}
+# function
+
+windout.iter <- function(dem, deflect, angles, max.dist) {
+    #note that the dem raster must be in planar coordinates
+    
+    #for smaller datasets:
+    #dem <- readAll(dem)     #if in memory
+    res <- res(dem)
+    
+    # do not ignore the case where x and y resolution are not equal
+    stopifnot(all.equal(res[1], res[2]))
+    xr <- res[1]
+    
+    #number of distances to check, basically goes every other cell for speed.
+    num.dist <- round(max.dist / xr / 2)
+    distance <- seq(xr, max.dist, length.out=num.dist)
+    result <- list()
+    j <- 1
+    
+    for (d in deflect) {
+        midrow <- cellFromRow(dem,rownr=1)    #note this does the top one
+        elev <- extract(dem,midrow)
+        coords <- xyFromCell(dem, midrow)
+    
+        radangle <- (angles+90) * pi/180  #convert to radians.
+        dcosangle <- -cos(radangle) * distance
+        dsinangle <- sin(radangle) * distance
+        x <- apply(coords[,1,drop=FALSE], 1, function(j) j + dcosangle)
+        y <- apply(coords[,2,drop=FALSE], 1, function(j) j + dsinangle)
+        xy <- cbind(as.vector(x), as.vector(y))
+    
+        comp.elev <- extract(dem, xy)
+        comp.elev <- matrix(comp.elev, ncol=num.dist, byrow=TRUE)
+        comp.elev <- comp.elev - elev
+        comp.elev <- t(t(comp.elev) / distance)
+        #notAllNA <- rowSums(is.na(comp.elev)) != num.dist
+        ang <- atan(comp.elev) * (180 / pi)
+    
+        r <- apply(ang,1,max)
+    
+        r <- r<=d
+        result[[j]] <- r*1
+        j <- j+1
+        }
+    
+    output <-simplify2array(result)
+    output <- apply(output,1,sum)
+    output <- output+1
+    outputs <- list()
+    outputs[[1]] <- output
+    outputs[[2]] <- coords
+    return(outputs)
+}
+
+```
+
+
+This next code then loops through a DEM, first subsetting out an area the size of the max distance (that keeps things fast) and then calculating all wind directions desired and averaging the results.  To do this in practice, one needs to know the distribution of storm-force wind directions, and builds the directions based off that (to weight a given direction, one could either calculate twice or simply duplicate).  The following works at a 5km distance, several deflection angles, and is oriented around S, SE, and SW wind:
+
+```{r, eval=F, include=F}
+
+#load single big DEM
+dem <- raster(paste0(dempath, "DEM_30m_", areaname,"_clean_aoi_filled_mask_new.tif"))
+
+plot(dem,maxpixels=60000)
+e <- extent(c(399967.3, 409091, -1287161, -1279727 ))
+dem <- crop(dem,e)   #If you want to do a focal area
+
+# #set projection
+# proj.def <- "+proj=utm +ellps=WGS84 +zone=8 +units=m"  #Adjust as needed.
+# dem <- projectRaster(dem, crs=proj.def)
+
+storage <- matrix(nrow=nrow(dem),ncol=ncol(dem))
+
+#set parameters
+max.dist <- 5000
+deflect <- c(1,3,5,7,9,11,13,14)
+angles <- c(135,180,225)
+
+iter <- 1:nrow(dem)    #to 3772 now
+r <- res(dem)[1]
+
+
+for (i in iter) {
+    temp.extent <- extent(dem)
+    temp.extent@ymax <- temp.extent@ymax-(i*r)    #*res(dem)[1] to avoid top
+    temp.extent@ymin <- temp.extent@ymax-(i*r+max.dist+r)
+
+    temp.dem <- crop(dem,temp.extent)
+    temp1 <- windout.iter(temp.dem,deflect,angles[1],max.dist)[[1]]
+    temp2 <- windout.iter(temp.dem,deflect,angles[2],max.dist)[[1]]
+    temp3 <- windout.iter(temp.dem,deflect,angles[3],max.dist)[[1]]
+
+    #temp.coords <- SpatialPoints(temp.coords)
+    temp <- apply(cbind(temp1,temp2,temp3),1,mean)
+    #t.loc <- cellFromXY(storage,temp.coords)
+
+    storage[i,] <- temp    
+    print(i)
+    removeTmpFiles(h=0)   #This is needed large processing jobs, which crash otherwise.
+    rm(temp.dem)
+    gc()
+}
+
+gc()
+t <- dem   #this creates a place to put the calculated values
+t[] <- storage
+
+mapview(t)+
+  mapview(dem)
+
+writeRaster(t, "D:/LST_paper_review/exposure/exp_example.tif",
+            format="GTiff",overwrite=T)
+
+
+```
+
+
+## Get AMPS data
+
+Metadata: 
+
+ float U[west_east_stag,south_north,bottom_top,Time]   (Chunking: [193,225,15,1])  (Compression: shuffle,level 2)
+      FieldType: 104
+      MemoryOrder: XYZ
+      description: x-wind component
+      units: m s-1
+      stagger: X
+      coordinates: XLONG_U XLAT_U XTIME
+  float V[west_east,south_north_stag,bottom_top,Time]   (Chunking: [192,226,15,1])  (Compression: shuffle,level 2)
+      FieldType: 104
+      MemoryOrder: XYZ
+      description: y-wind component
+      units: m s-1
+      stagger: Y
+      coordinates: XLONG_V XLAT_V XTIME
+  float W[west_east,south_north,bottom_top_stag,Time]   (Chunking: [192,225,16,1])  (Compression: shuffle,level 2)
+      FieldType: 104
+      MemoryOrder: XYZ
+      description: z-wind component
+      units: m s-1
+      stagger: Z
+      coordinates: XLONG XLAT XTIME
+
+
+Info on U and V for wind components http://colaweb.gmu.edu/dev/clim301/lectures/wind/wind-uv 
+
+third dimension = height
+
+### read stuff from netcdf
+```{r, echo=F, message=F, warning=F}
+# from library(Rsenal)
+uv2wdws <- function(u,v) {
+  degrees <- function(radians) 180 * radians / pi
+  mathdegs <- degrees(atan2(v, u))
+  wdcalc <- ifelse(mathdegs > 0, mathdegs, mathdegs + 360)
+  wd <- ifelse(wdcalc < 270, 270 - wdcalc, 270 - wdcalc + 360)
+  ws <- sqrt(u^2 + v^2)
+  return(cbind(wd, ws))
+}
+
+
+
+ad <- "D:/LST_paper_review/AMPS_data/"
+adf <- list.files(ad, full.names=T, pattern = "14.nc$")
+
+for(i in seq(adf)){
+    nc_data <- nc_open(adf[i])
+  # Save the print(nc) dump to a text file
+  {
+      sink(paste0(tools::file_path_sans_ext(adf[i]), '_metadata.txt'))
+   print(nc_data)
+      sink()
+  }
+}
+  
+windX <- ncvar_get(nc_data, "U")
+windY <- ncvar_get(nc_data, "V")
+windZ <- ncvar_get(nc_data, "W")
+
+lon <- ncvar_get(nc_data, "XLONG")
+lat <- ncvar_get(nc_data, "XLAT")
+
+nc_close(nc_data) 
+
+wind_l <- list(windX, windY, windZ)
+names(wind_l) <- c("U", "V", "Z")
+
+
+par(mfrow=c(1,3))
+hist(windX)
+hist(windY)
+hist(windZ)
+```
+
+
+```{r, message=F, warning=F}
+dim(lon)
+dim(lat)
+
+dim(windX) 
+dim(windY)
+dim(windZ)
+```
+
+
+
+The coordinates seen in NCview 
+
+Not sure how to get them, really doesn't make much sense to me from the metadata and ncdf file... 
+
+They are: 
+
+```{r, message=F, warning=F,echo=F}
+extent_NCView <- extent(c(152.695, 180, -81.839, -74.7438))
+ep <- as(extent_NCView, 'SpatialPolygons')
+crs(ep) <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0")
+mapview(ep)
+
+```
+
+
+### Look at the necessary flips and t for coordinate rasters
+```{r, message=F, warning=F,echo=F}
+
+par(mfrow=c(1,2))
+rlon <- raster(lon)
+plot(rlon, main="lon original position")
+
+rlon <- raster(t(lon))
+rlon <- flip(rlon, direction='y')
+plot(rlon, main="lon transposed and flipped")
+
+
+```
+
+This shows, that the matrix is transposed, we also need to flip, as the actual data situation proved. 
+
+The lat data: 
+
+```{r, message=F, warning=F,echo=F}
+rlat <- raster(t(lat))
+rlat <- flip(rlat, direction="y") 
+par(mfrow=c(1,1))
+plot(rlat, main="lat transposed and flipped")
+```
+
+
+### deal with the 180° problem
+
+Now, for the untransposed and unflipped data, we need to cut to the extent witnessed in NCView.
+
+For lon max, we cut to 180° by taking all columns, that are positive, i.e. not using the -177 etc. 
+
+```{r,echo=TRUE}
+extent_NCView
+
+rlon <- raster(lon)
+
+dim(rlon)
+dim(lon)
+```
+
+dim(lonnew)
+
+```{r, message=F, warning=F,echo=F}
+# Cut xmax (lon max) to 180
+# in the column of lon, where do values get negative for the first time
+cutoff_index <- which(lon[,1]<1)[1]
+lonnew <- lon[1:(cutoff_index-1),]
+dim(lonnew)
+par(mfrow=c(1,2))
+plot(raster(lonnew), main="new longitude")
+
+# if we then t and flip
+lonnew_ft <- raster(t(lonnew))
+lonnew_ft <- flip(lonnew_ft)
+plot(lonnew_ft, main="new longitude t and flipped")
+```
+
+
+
+# cropping all wind rasters to the new dimensions
+
+On untransposed and unflipped data, we should be able to do the same as in lon.
+```{r, message=F, warning=F,echo=F}
+wind_l_cropped <- lapply(seq(wind_l), function(i){
+  cat("org: ", dim(wind_l[[i]]))
+  
+  x <- wind_l[[i]][(1:(cutoff_index-1)),,]
+
+  cat("new:", dim(x))
+  x
+  })
+```
+
+
+
+```{r, message=F, warning=F,echo=F}
+# e <- c(150, 170, -79, -75)
+wind_grid <- lapply(seq(wind_l), function(i){
+  
+  r_t1 <- wind_l_cropped[[i]][,,1] # get first height 
+  rx <- raster(t(r_t1), # was t(windX_time1) looks better not transposed
+            xmn=152.695, 
+            xmx=max(lonnew), 
+            ymn=-81.839, 
+            ymx=-74.7438, 
+            crs=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs+ towgs84=0,0,0"))
+  
+  rx <- flip(rx, direction='y')
+  
+  rx <- crop(rx, aoiwgs)
+  rx <- mask(rx, aoiwgs)
+  # rxproj <- projectRaster(rx, crs=3031)
+  # rxproj_aoi <- crop(rxproj, aoianta)
+  # 
+  # rxproj_aoi <- mask(rxproj, aoianta)
+
+  
+  # rx <- crop(rx, e)
+  return(rx)
+})
+
+
+names(wind_grid) <- c("U", "V", "Z")
+
+mapview(wind_grid$U,map.types="Esri.WorldImagery",na.color="#00000000")+
+  mapview(wind_grid$V, na.color="#00000000")+mapview(aoianta, alpha.regions=0, lwd=4)
+```
+
+## wind direction and speed 
+
+```{r,message=F, warning=F,echo=F}
+convert_to_wd_and_ws <- function(wind_l, height=1){
+  wd_ws <- uv2wdws(as.vector(wind_l$U[,,height]), 
+          as.vector(wind_l$V[,,height]))
+  
+  wd_ws <- uv2wdws(wind_grid$U[],
+          wind_grid$V[])
+  
+  dim(wd_ws)
+  
+  wd <- wind_grid$V
+  ws <- wind_grid$V
+  
+  wd[] <- wd_ws[,1]
+  ws[] <- wd_ws[,2]
+  
+  # 
+  # wd <- crop(wd, aoiwgs)
+  # ws <- crop(ws, aoiwgs)
+  
+  return(list(wd = wd, 
+              ws = ws))
+}
+
+wd_ws_aoi <- convert_to_wd_and_ws(wind_l = wind_grid, height=1)
+
+mapview(wd_ws_aoi$wd,map.types="Esri.WorldImagery",na.color="#00000000")+
+  mapview(wd_ws_aoi$ws,map.types="Esri.WorldImagery",na.color="#00000000")+
+  mapview(aoianta, alpha.regions=0, lwd=4)
+```
+
+
+
+```{r, message=F, warning=F, echo=F, eval=F, include=F}
+
+windField <- stack(wd_ws_aoi$ws, wd_ws_aoi$wd)
+names(windField) <- c('magnitude', 'direction')
+
+
+# from here https://oscarperpinan.github.io/bookvis/spatial.html#vector
+vectorTheme <- BTCTheme(regions = list(alpha = 0.7))
+
+vectorplot(windField, isField = TRUE,
+           aspX = 5, aspY = 5,
+           narrows=900,lwd.arrows=2,
+           length=unit(0.03, 'npc'),
+           scaleSlope = FALSE, 
+           key.arrow = list(label = 'm/s'),
+           par.settings = vectorTheme,
+           colorkey = FALSE,
+           scales = list(draw = FALSE))
+
+# myTheme <- streamTheme(
+#     region = rev(brewer.pal(n = 4, "Greys")),
+#     symbol = rev(brewer.pal(n = 9, "Blues")))
+# 
+# streamplot(windField, isField = TRUE,
+#            par.settings = myTheme,
+#            droplet = list(pc = 12),
+#            streamlet = list(L = 5, h = 5),
+#            scales = list(draw = FALSE),
+#            panel = panel.levelplot.raster)
+
+vectorplot(wd_ws_aoi$ws, par.settings=BuRdTheme(),
+           narrows=900,lwd.arrows=2,
+           length=unit(0.02, 'npc'),
+           key.arrow = list(label = 'm/s'))
+```
+
+
+```{r, eval=F, include=F}
+
+wdws <- data.frame(wd=wd_ws_aoi$wd[], 
+                   ws=wd_ws_aoi$ws[],
+                   coordinates(wd_ws_aoi$ws))
+
+ggplot(wdws, 
+       aes(x = x , 
+           y = y, 
+           fill = ws, 
+           angle = wd, 
+           radius = scales::rescale(ws, c(.01, .1)))) +
+    geom_raster() +
+    geom_spoke(arrow = arrow(length = unit(.05, 'inches'))) + 
+    scale_fill_distiller(palette = "RdYlGn") + 
+    coord_equal(expand = 0) + 
+    theme(legend.position = 'bottom', 
+          legend.direction = 'horizontal')
+
+```
+
+
+
+## correlate wind exposure and LST
+```{r, echo=F, message=F, warning=F}
+expDir <- "D:/LST_paper_review/exposure/"
+dem <- raster("C:/Users/mleza/OneDrive/Documents/PhD/work_packages/SurfaceMoisture/predictors/DEM_8m_MDV_filled_aoi.tif")
+full_grid <- readRDS("C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/downscaleLST.MDV/data/full_size_grids_all_layers.RDS")
+comp_ex2 <- readRDS("C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/downscaleLST.MDV/data/comp_ex2.RDS")
+ex_2_all_layers <- readRDS("C:/Users/mleza/OneDrive/Documents/PhD/work_packages/auto_downscaling_30m/downscaleLST.MDV/data/ex_2_all_layers.RDS")
+full_dsc <- raster("D:/downscaling_after_talk/predictions/pred_rf_MYD11_L2.A2018316.1350.006.2bilinmod.tif")
+exp150 <- raster(paste0(expDir, "Wind_Expo_150.tif"))
+
+wind_eff <- raster(paste0(expDir, "Wind_Effect_900_full.tif"))
+wind_eff <- mask(wind_eff, aoianta)
+
+wind_exp <- raster(paste0(expDir, "Wind_Expo_900_full.tif"))
+wind_exp <- mask(wind_exp, aoianta)
+
+```
+
+
+```{r, echo=F, message=F, warning=F, eval=F}
+
+demex2 <- crop(dem, extent(comp_ex2))
+writeRaster(demex2, paste0(expDir, "small_DEM_ex2.tif"))
+
+writeRaster(full_grid$dem, paste0(expDir, "dem_30_full.tif"))
+
+wind_exp_full <- raster(paste0(expDir, "Wind_Expo_900_full.tif"))
+mapview(wind_exp_full)+mapview(full_grid$dem)
+
+#### bring windspeed and winddirection into same format as full_grid
+
+wdwss <- stack(wd_ws_aoi$wd, wd_ws_aoi$ws)
+wdwss_p <- projectRaster(wdwss, full_grid)
+wdwss_30 <- resample(wdwss_p, full_grid$dem)
+names(wdwss_30) <- c("wd","ws")
+
+writeRaster(wdwss_30$wd, paste0(expDir, "wd_full_30.tif"))
+writeRaster(wdwss_30$ws, paste0(expDir, "ws_full_30.tif"))
+
+# windspeed and winddirection for example 2
+wd_proj <- projectRaster(wd_ws_aoi$wd, comp_ex2)
+wd_proj_ex2 <- crop(wd_proj,comp_ex2)
+wd_proj_ex2 <- resample(wd_proj_ex2, comp_ex2)
+
+names(wd_proj_ex2) <- "wd_ex2"
+comp_ex2 <- stack(comp_ex2, wd_proj_ex2)
+
+writeRaster(wd_proj_ex2, paste0(expDir, "wd_ex2.tif"),
+            overwrite=T)
+
+
+```
+
+
+I'll take the difference by: diff=downscaled-Landsat
+That way, the values that are negative are where an underestimation happened in downscaling and 
+positive values are areas where overestimation happened. 
+```{r, echo=F, message=F, warning=F}
+diff_full <- full_dsc-full_grid$L
+mapview(diff_full)
+
+diff <- comp_ex2$downscaled-comp_ex2$L
+mapview(diff)
+```
+
+Overestimation happens mostly on the mountain peaks. 
+
+```{r, echo=F, message=F, warning=F}
+
+mapview(diff_full)+
+  mapview(ex_2_all_layers$landcoverres)+
+  mapview(exp150)
+
+```
+
+
+There does not seem to be such an explicit relation between LST and windspeed, 
+but in fact windward position would be more interesting, i.e. wind direction and 
+terrain 
+```{r, echo=F, message=F, warning=F}
+mapview(wd_ws_aoi$ws)+
+  mapview(full_grid$L)
+
+
+```
+
+```{r, eval=F, include=F}
+
+
+library("RSAGA", quietly = TRUE)
+# rsaga.env()[1:5]
+# rsaga.get.libraries()[1:60]
+# rsaga.get.modules("ta_morphometry")
+
+# made the saga grid dem by reading into SAGA GUi and writing from there 
+rsaga.geoprocessor(lib = "ta_morphometry", module = "Wind Exposition Index",
+                  param = list(DEM = paste0(expDir, "small_DEM_ex2.sgrd"),
+                    #DEM = "C:/Users/mleza/OneDrive/Documents/PhD/work_packages/SurfaceMoisture/predictors/DEM_8m_MDV_filled_aoi.sgrd", 
+                               EXPOSITION = "C:/Users/mleza/OneDrive/Documents/PhD/work_packages/SurfaceMoisture/predictors/Wind_Expo_900m.sgrd",
+                  MAXDIST=900))
+
+```
+
+
+### correlate topographic wind exposition and windward / leeward index for 
+example 2 and correlate with other variables
+```{r, echo=F, warning=F, message=F}
+# exp900 <- raster(paste0(expDir, "Wind_Expo_900.tif"))
+# mapview(exp150)+mapview(exp900) # turned out to be the same
+
+exp150proj <- projectRaster(exp150, diff)
+
+wind_eff_ex2 <- crop(wind_eff, exp150)
+
+s <- stack(exp150proj, diff, wind_eff_ex2)
+names(s) <- c("wind_exp", "diff_L_dsc", "wind_effect")
+sdf <- data.frame(s[])
+cor.test(sdf$wind_exp, sdf$diff_L_dsc,
+         use="pairwise.complete.obs")
+
+
+mapview(exp150)+mapview(diff)+mapview(wind_eff_ex2)
+par(mfrow=c(1,3))
+plot(diff, main="predicted -observed LST")
+plot(exp150, main="topographic wind exposure")
+plot(wind_eff_ex2, main="wind effect AMPS")
+```
+
+
+```{r, echo=F, message=F, warning=F}
+names(s) <- c("top_wind_exp", "diff_dsc_L", "wind_effect")
+s_full <- stack(ex_2_all_layers, s)
+s_full_df <- data.frame(s_full[])
+names(s_full_df)
+
+s_df_cor <- s_full_df[c("dem", "slope", "aspect", "soilraster", "diff_dsc_L", "top_wind_exp", "wind_effect","L")]
+cor_mat_ex2 <- cor(s_df_cor, use="pairwise.complete.obs")
+
+```
+
+
+
+### correlate topographic wind exposition and windward / leeward index for 
+full scene and correlate with other variables
+
+```{r, echo=F, warning=F, message=F}
+names(diff_full) <- "diff_dsc_L"
+names(wind_eff) <- "wind_effect"
+names(wind_exp) <- "top_wind_exp"
+full_grid_wind <- stack(full_grid, wind_eff, wind_exp, diff_full)
+s_full_stack <- full_grid_wind[[c("dem", "slope", "aspect", "soilraster", "diff_dsc_L", "top_wind_exp", "wind_effect","L")]]
+s_full_df_cor <- data.frame(s_full_stack[])
+cor_mat <- cor(s_full_df_cor, use="pairwise.complete.obs")
+```
+
+### Example 2
+```{r, echo=F, warning=F, message=F, out.width="70%"}
+par(mfrow=c(1,1), oma=c(0,0,2,0))
+corrplot(cor_mat_ex2, method="number", 
+         type="upper", tl.col="black",
+         diag=F, insig="blank")
+```
+
+### Full Scene
+```{r, echo=F, warning=F, message=F, out.width="70%"}
+corrplot(cor_mat, method="number", 
+         type="upper", tl.col="black",
+         diag=F, insig="blank")
+```
+
+Example 2 (left) and full scene (right): 
+
+Example2:
+The wind exposition has a medium strong negative correlation with the 30m LST (L). 
+The difference between observed and predicted LST has to do a lot with the terrain, 
+the slope and the wind exposure. So it seems to actually be a very good predictor. 
+
+Full Scene: 
+
+## where does over/underestimation happen with respect to the terrain
+
+```{r}
+rs <- full_grid_wind[[c("dem", "L", "wind_effect", "diff_dsc_L")]]
+
+rsdf <- data.frame(rs[])
+corm <- cor(rsdf, use="pairwise.complete.obs")
+
+
+
+mapview(full_grid_wind$dem)+
+  mapview(full_grid_wind$L)+
+  mapview(full_grid_wind$wind_effect)+
+  mapview(full_grid_wind$diff_dsc_L)
+```
+
+Overestimation mostly on the top of the mountains. 
+
+
+```{r}
+full_grid$landcoverres
+writeRaster(full_grid$landcoverres, paste0(dempath, "landcoverres.tif"))
+
+```
+
