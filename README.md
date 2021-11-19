@@ -10,8 +10,7 @@ downscaling approach described in XXX and links to the scripts within
 this repository in the adequate order. The resulting downscaling model
 and necessary predictor data to downscale a MODIS scene captured during
 the austral summer months during daylight conditions and the McMurdo Dry
-Valleys can be installed from [Github repo
-downscaleLST.MDV](https://github.com/MLezamaValdes/downscaleLST.MDV)
+Valleys can be installed from [Github repo](https://github.com/MLezamaValdes/downscaleLST.MDV)
 
 ## Basic settings
 
